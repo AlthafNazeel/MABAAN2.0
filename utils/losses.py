@@ -43,10 +43,14 @@ class DiceLossPerSample(nn.Module):
 # ---------------------------------------------------------------------------
 
 class WeightedBCELoss(nn.Module):
-    """BCE loss with optional per-pixel weight map."""
+    """BCE loss with optional per-pixel weight map.
 
-    def forward(self, pred, target, weight_map=None):
-        bce = F.binary_cross_entropy(pred, target, reduction='none')
+    Uses binary_cross_entropy_with_logits for AMP compatibility.
+    Input should be raw logits (pre-sigmoid).
+    """
+
+    def forward(self, logits, target, weight_map=None):
+        bce = F.binary_cross_entropy_with_logits(logits, target, reduction='none')
         if weight_map is not None:
             bce = bce * weight_map
         return bce.mean()
@@ -191,28 +195,37 @@ class MorphologyAwareLossV2(nn.Module):
         self.use_consistency = use_consistency
 
     def forward(self, preds, targets):
-        seg_pred = preds['mask']
-        bnd_pred = preds['boundary']
+        # Use logits for BCE (AMP-safe), sigmoid outputs for Dice
+        seg_logits = preds['logits']
+        bnd_logits = preds.get('boundary_logits', None)
+        seg_prob = preds['mask']        # already sigmoid'd
+        bnd_prob = preds['boundary']    # already sigmoid'd
         seg_gt = targets['mask']
         bnd_gt = targets['boundary']
         weight_map = targets.get('weight_map', None)
 
         # Segmentation losses with morphology weighting
-        seg_bce = self.seg_bce(seg_pred, seg_gt, weight_map=weight_map)
-        seg_dice = self.seg_dice(seg_pred, seg_gt, weight_map=weight_map)
+        seg_bce = self.seg_bce(seg_logits, seg_gt, weight_map=weight_map)
+        seg_dice = self.seg_dice(seg_prob, seg_gt, weight_map=weight_map)
 
         # Boundary losses with stronger morphology emphasis
         bnd_weight_map = None
         if weight_map is not None:
             bnd_weight_map = 1.0 + 1.5 * (weight_map - 1.0)
 
-        bnd_bce = self.bnd_bce(bnd_pred, bnd_gt, weight_map=bnd_weight_map)
-        bnd_dice = self.bnd_dice(bnd_pred, bnd_gt, weight_map=bnd_weight_map)
+        # Use boundary logits for BCE if available, else fall back to probs
+        if bnd_logits is not None:
+            bnd_bce = self.bnd_bce(bnd_logits, bnd_gt, weight_map=bnd_weight_map)
+        else:
+            bnd_bce = F.binary_cross_entropy_with_logits(
+                torch.logit(bnd_prob.clamp(1e-6, 1 - 1e-6)), bnd_gt, reduction='none'
+            ).mean()
+        bnd_dice = self.bnd_dice(bnd_prob, bnd_gt, weight_map=bnd_weight_map)
 
-        # Optional consistency loss
-        cons = torch.tensor(0.0, device=seg_pred.device)
+        # Optional consistency loss (uses sigmoid outputs)
+        cons = torch.tensor(0.0, device=seg_prob.device)
         if self.use_consistency and self.consistency is not None:
-            cons = self.consistency(seg_pred, bnd_pred)
+            cons = self.consistency(seg_prob, bnd_prob)
 
         total = (
             self.seg_bce_w * seg_bce
