@@ -203,7 +203,12 @@ def train_epoch_v2(model, dl, criterion, optimizer, device,
         scaler: GradScaler instance (None to disable AMP).
         grad_clip: Max gradient norm (0 to disable).
     """
-    from torch.cuda.amp import autocast
+    try:
+        from torch.amp import autocast
+        amp_device = 'cuda'
+    except ImportError:
+        from torch.cuda.amp import autocast
+        amp_device = None
 
     model.train()
     total_loss, total_dice, total_iou, n = 0.0, 0.0, 0.0, 0
@@ -219,7 +224,8 @@ def train_epoch_v2(model, dl, criterion, optimizer, device,
 
         optimizer.zero_grad(set_to_none=True)
 
-        with autocast(enabled=(scaler is not None)):
+        ctx = autocast(amp_device, enabled=(scaler is not None)) if amp_device else autocast(enabled=(scaler is not None))
+        with ctx:
             out = model(inp)
             losses = criterion(out, targets)
 
@@ -300,11 +306,19 @@ def train_model_v2(model, dataloaders, criterion, optimizer, scheduler, device,
         grad_clip: Maximum gradient norm (0 to disable).
         resume_from: Path to checkpoint to resume from.
     """
-    from torch.cuda.amp import GradScaler
+    try:
+        from torch.amp import GradScaler
+    except ImportError:
+        from torch.cuda.amp import GradScaler
     from .evaluation import find_best_threshold
 
-    scaler = GradScaler(enabled=use_amp) if use_amp else None
+    scaler = GradScaler('cuda', enabled=use_amp) if use_amp else None
     tracker = MetricTracker()
+
+    print(f"  AMP: {'ON' if use_amp else 'OFF'} | Grad clip: {grad_clip}")
+    print(f"  Device: {device} | CUDA available: {torch.cuda.is_available()}")
+    if torch.cuda.is_available():
+        print(f"  GPU: {torch.cuda.get_device_name(0)} x{torch.cuda.device_count()}")
 
     best = {
         'val_loss': float('inf'),
@@ -341,12 +355,11 @@ def train_model_v2(model, dataloaders, criterion, optimizer, scheduler, device,
         )
 
         if scheduler is not None:
-            if hasattr(scheduler, 'step'):
-                # Support both ReduceLROnPlateau and step-based schedulers
-                try:
-                    scheduler.step(val_loss)
-                except TypeError:
-                    scheduler.step()
+            from torch.optim.lr_scheduler import ReduceLROnPlateau
+            if isinstance(scheduler, ReduceLROnPlateau):
+                scheduler.step(val_loss)
+            else:
+                scheduler.step()
 
         tracker.update(
             tr_loss, val_loss, tr_dice, val_dice, tr_iou, val_iou,
