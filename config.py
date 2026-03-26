@@ -10,7 +10,7 @@ class Config:
     DATA_PATH = "/kaggle/input/datasets/althafnazeell/livecell"
     IMG_SIZE = 256
     MAX_SAMPLES = None
-    NUM_WORKERS = 12
+    NUM_WORKERS = 8
 
     # Model
     ENCODER = "resnet34"
