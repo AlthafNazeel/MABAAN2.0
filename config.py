@@ -19,8 +19,8 @@ class Config:
     ATTENTION_REDUCTION = 16
 
     # Training
-    BATCH_SIZE = 16
-    NUM_EPOCHS = 30
+    BATCH_SIZE = 32
+    NUM_EPOCHS = 2
     LEARNING_RATE = 1e-4
     WEIGHT_DECAY = 1e-4
     EARLY_STOPPING_PATIENCE = 10
